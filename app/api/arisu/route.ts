@@ -17,6 +17,12 @@ export async function POST(req: NextRequest) {
       sujunNm?: string;
     };
 
+    // ─── 0. Dynamic Date Generation ───
+    const now = new Date();
+    const dYear = now.getFullYear().toString();
+    const dMonth = (now.getMonth() + 1).toString().padStart(2, '0');
+    const dDay = now.getDate().toString().padStart(2, '0');
+
     const {
       searchMkey,
       searchNapgi,
@@ -24,9 +30,9 @@ export async function POST(req: NextRequest) {
       ocrBand1 = '',
       ocrBand2 = '',
       epayNo = '',
-      levyYear = '',
-      levyMonth = '',
-      levyDay = '',
+      levyYear = dYear,
+      levyMonth = dMonth,
+      levyDay = dDay,
       sujunNm = searchCsNm,
     } = body;
 
@@ -37,39 +43,63 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const params = new URLSearchParams();
-    params.append('searchMkey', searchMkey.padStart(9, '0'));
-    params.append('searchNapgi', searchNapgi);
-    params.append('searchCsNm', searchCsNm);
-    params.append('_m', 'm1_1');
-    params.append('levyYear', levyYear);
-    params.append('levyMonth', levyMonth);
-    params.append('levyDay', levyDay);
-    params.append('epayNo', epayNo);
-    params.append('sujunNm', sujunNm);
-    params.append('ocrBand1', ocrBand1);
-    params.append('ocrBand2', ocrBand2);
-
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 20000); // 20s for two-stage request
 
     let html: string;
     try {
-      const response = await fetch(
-        'https://i121.seoul.go.kr/cs/cyber/front/cgcalc/NR_cgJungInfo.do',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Referer': 'https://i121.seoul.go.kr/cs/cyber/front/cgcalc/NR_cgJungInfo.do',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9',
-          },
-          body: params.toString(),
-          signal: controller.signal,
-        }
-      );
+      // ─── 1. Pre-flight GET to get resultKey & Session ───
+      const pageUrl = 'https://i121.seoul.go.kr/cs/cyber/front/cgcalc/NR_cgJungInfo.do';
+      const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+      const preResponse = await fetch(pageUrl, {
+        method: 'GET',
+        headers: { 'User-Agent': userAgent },
+        signal: controller.signal
+      });
+
+      if (!preResponse.ok) throw new Error('아리수 서버 접근 실패 (세션 확보 불가)');
+
+      const preHtml = await preResponse.text();
+      const $pre = cheerio.load(preHtml);
+      const resultKey = $pre('input[name="resultKey"]').val() || '';
+      
+      // Get Cookies
+      const cookies = preResponse.headers.get('set-cookie');
+
+      // ─── 2. Final POST with all required fields ───
+      const params = new URLSearchParams();
+      params.append('searchMkey', searchMkey.padStart(9, '0'));
+      params.append('searchNapgi', searchNapgi);
+      params.append('searchCsNm', searchCsNm);
+      params.append('_m', 'm1_1');
+      params.append('levyYear', levyYear);
+      params.append('levyMonth', levyMonth);
+      params.append('levyDay', levyDay);
+      params.append('epayNo', epayNo);
+      params.append('sujunNm', sujunNm);
+      params.append('ocrBand1', ocrBand1);
+      params.append('ocrBand2', ocrBand2);
+      
+      // New Security/Hidden Parameters
+      params.append('_csNm', 'null');
+      params.append('_mkey', 'null');
+      params.append('_napgi', 'null');
+      params.append('resultKey', typeof resultKey === 'string' ? resultKey : '');
+
+      const response = await fetch(pageUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Referer': pageUrl,
+          'User-Agent': userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'ko-KR,ko;q=0.9',
+          ...(cookies ? { 'Cookie': cookies } : {}),
+        },
+        body: params.toString(),
+        signal: controller.signal,
+      });
 
       if (!response.ok) {
         throw new Error(`아리수 서버 응답 오류: ${response.status}`);
